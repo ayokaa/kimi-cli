@@ -956,12 +956,15 @@ class OAuthManager:
                         self._cache_access_token(ref, latest)
                         self._apply_access_token(runtime, latest.access_token)
                         return
-                    # Clear in-memory state first, then delete the credential
-                    # file.  This order ensures that even if file deletion
-                    # fails, the revoked token is no longer used in-process.
+                    # Do not delete the credential file on a single 401: there
+                    # is a TOCTOU window between the load_tokens check above
+                    # and here in which a concurrent manager may write a
+                    # freshly rotated token.  Clearing the in-memory cache is
+                    # enough; if the refresh_token is truly revoked, the next
+                    # ensure_fresh will 401 again and the user is prompted to
+                    # /login, which atomically overwrites the file.
                     self._access_tokens.pop(ref.key, None)
                     self._apply_access_token(runtime, "")
-                    delete_tokens(ref)
                     if force:
                         raise
                     logger.warning(

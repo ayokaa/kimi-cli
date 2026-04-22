@@ -371,10 +371,39 @@ async def test_ensure_fresh_force_raises_on_unauthorized():
         patch(
             "kimi_cli.auth.oauth.refresh_token", AsyncMock(side_effect=OAuthUnauthorized("revoked"))
         ),
-        patch("kimi_cli.auth.oauth.delete_tokens"),
         pytest.raises(OAuthUnauthorized, match="revoked"),
     ):
         await manager.ensure_fresh(force=True)
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_must_not_delete_credentials_file(tmp_path, monkeypatch):
+    """A single 401 from the refresh endpoint must not delete the credentials
+    file.  The load_tokens check above the deletion site is vulnerable to a
+    TOCTOU race: a concurrent manager may write a freshly rotated token into
+    the file between the check and the deletion, and wiping it would cause
+    permanent auth loss even though a valid token is sitting on disk.
+    """
+    monkeypatch.setenv("KIMI_SHARE_DIR", str(tmp_path))
+    _save_to_file("oauth/kimi-code", _make_token(refresh="R1", expires_in=100))
+    cred = tmp_path / "credentials" / "kimi-code.json"
+    assert cred.exists()
+
+    manager = OAuthManager(_make_config())
+
+    with (
+        patch(
+            "kimi_cli.auth.oauth.refresh_token",
+            AsyncMock(side_effect=OAuthUnauthorized("invalid_grant")),
+        ),
+        pytest.raises(OAuthUnauthorized),
+    ):
+        await manager.ensure_fresh(force=True)
+
+    assert cred.exists(), (
+        "credentials file was deleted on a single 401 — a concurrent "
+        "manager may have just rotated the token in the TOCTOU window"
+    )
 
 
 @pytest.mark.asyncio
